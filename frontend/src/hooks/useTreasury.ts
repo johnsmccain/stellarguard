@@ -21,11 +21,16 @@ import {
 import { classifyError, type AppError } from "@/lib/errors";
 import { createLatestRequestGuard, isAbortError } from "@/lib/requestGuard";
 import { isWalletNetworkMismatch } from "@/lib/network";
+import {
+  MOCK_TREASURY_CONFIG,
+  MOCK_TREASURY_TRANSACTIONS,
+} from "@/lib/treasuryMocks";
 import { useFreighter } from "./useFreighter";
 import { usePageVisibility } from "./usePageVisibility";
 
 const REFRESH_INTERVAL = 30_000;
 const MAX_VISIBLE_TRANSACTIONS = 20;
+const IS_TREASURY_MOCK_MODE = process.env.NEXT_PUBLIC_USE_MOCK_TREASURY === "1";
 
 type TxAction = "approve" | "execute";
 
@@ -43,6 +48,7 @@ export function useTreasury() {
   const [isProposing, setIsProposing] = useState(false);
 
   const requestGuardRef = useRef(createLatestRequestGuard());
+  const txCounterRef = useRef(MOCK_TREASURY_CONFIG.txCount);
 
   const isNetworkMismatch = useMemo(
     () => isWalletNetworkMismatch(network),
@@ -151,6 +157,20 @@ export function useTreasury() {
   );
 
   const refresh = useCallback(async () => {
+    if (IS_TREASURY_MOCK_MODE) {
+      setIsLoading(false);
+      setError(null);
+      setConfig({
+        ...MOCK_TREASURY_CONFIG,
+        txCount: txCounterRef.current,
+      });
+      setBalance(MOCK_TREASURY_CONFIG.balance);
+      setTransactions((current) =>
+        current.length > 0 ? current : MOCK_TREASURY_TRANSACTIONS,
+      );
+      return;
+    }
+
     const request = requestGuardRef.current.begin();
 
     if (requestGuardRef.current.isCurrent(request.id)) {
@@ -223,6 +243,36 @@ export function useTreasury() {
       amount: bigint | number,
       memo: string,
     ): Promise<void> => {
+      if (IS_TREASURY_MOCK_MODE) {
+        const amountBigInt =
+          typeof amount === "bigint" ? amount : BigInt(amount);
+        const nextId = txCounterRef.current + 1;
+        txCounterRef.current = nextId;
+        setTransactions((current) => [
+          {
+            id: nextId,
+            to,
+            amount: amountBigInt,
+            memo,
+            approvals: address ? [address] : [],
+            executed: false,
+            createdAt: Math.floor(Date.now() / 1000),
+            executedAt: null,
+            proposer: address ?? "",
+          },
+          ...current,
+        ]);
+        setConfig((current) =>
+          current
+            ? {
+                ...current,
+                txCount: nextId,
+              }
+            : current,
+        );
+        return;
+      }
+
       assertWalletReady();
       const walletAddress = address as string;
       setError(null);
@@ -251,6 +301,27 @@ export function useTreasury() {
 
   const approve = useCallback(
     async (txId: number): Promise<void> => {
+      if (IS_TREASURY_MOCK_MODE) {
+        if (!address) {
+          throw new Error("Wallet not connected");
+        }
+        setTransactions((current) =>
+          current.map((transaction) => {
+            if (transaction.id !== txId || transaction.executed) {
+              return transaction;
+            }
+            if (transaction.approvals.includes(address)) {
+              return transaction;
+            }
+            return {
+              ...transaction,
+              approvals: [...transaction.approvals, address],
+            };
+          }),
+        );
+        return;
+      }
+
       assertWalletReady();
       const walletAddress = address as string;
       setError(null);
@@ -326,6 +397,20 @@ export function useTreasury() {
 
   const execute = useCallback(
     async (txId: number): Promise<void> => {
+      if (IS_TREASURY_MOCK_MODE) {
+        setTransactions((current) =>
+          current.map((transaction) =>
+            transaction.id === txId
+              ? {
+                  ...transaction,
+                  executed: true,
+                }
+              : transaction,
+          ),
+        );
+        return;
+      }
+
       assertWalletReady();
       const walletAddress = address as string;
       setError(null);
